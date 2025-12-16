@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <title>BOLT File Transfer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      // Tailwind dark mode and colors
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            colors: {
+              primary: '#fbbf24',
+              accent: '#0ea5e9',
+            },
+          },
+        },
+      };
+    </script>
+    <style>
+      body {
+        background: url('https://www.transparenttextures.com/patterns/cubes.png'),
+          radial-gradient(circle at 50% 50%, #1e293b, #0f172a);
+        font-family: 'Inter', sans-serif;
+        overflow: hidden;
+      }
+      ::-webkit-scrollbar { width: 8px; }
+      ::-webkit-scrollbar-track { background: #334155; border-radius: 10px; }
+      ::-webkit-scrollbar-thumb { background: #0ea5e9; border-radius: 10px; }
+      ::-webkit-scrollbar-thumb:hover { background: #0284c7; }
+
+      .content-box { max-height: 90vh; overflow-y: auto; display: flex; flex-direction: column; }
+      .content-box > div { flex-shrink: 0; }
+      #fileArea { flex-grow: 1; overflow-y: auto; padding-bottom: 1rem; }
+      #previewArea, #fileLinks { flex-shrink: 0; }
+      .file-preview-card {
+        transition: transform 0.2s ease-out, box-shadow 0.2s ease-out, background-color 0.2s ease-out;
+      }
+      .file-preview-card:hover { transform: translateY(-2px); box-shadow: 0 8px 16px rgba(0,0,0,0.4); }
+
+      .transparent-upload-box {
+        border: 2px dashed #4b5563;
+        background-color: rgba(255,255,255,0.05);
+        transition: background-color 0.3s ease, border-color 0.3s ease;
+      }
+      .transparent-upload-box.drag-over {
+        border-color: #0ea5e9;
+        background-color: rgba(255,255,255,0.15);
+      }
+    </style>
+  </head>
+  <body class="flex items-center justify-center min-h-screen text-white">
+    <div class="backdrop-blur-xl bg-white/10 dark:bg-black/30 rounded-3xl p-6 shadow-2xl border border-white/20 max-w-xl w-full text-center space-y-6 mx-2 sm:mx-auto content-box">
+      <div>
+        <h1 class="text-4xl font-bold text-primary mb-2 tracking-wide flex items-center justify-center">
+          B<span class="text-accent mx-1" style="font-family:monospace;">⚡</span>LT
+        </h1>
+        <p class="text-gray-300 text-sm">Lightning fast local file transfer.</p>
+      </div>
+
+      <div class="flex gap-6 justify-center">
+        <button id="sendBtn" class="px-6 py-3 bg-primary rounded-xl text-lg font-semibold hover:bg-indigo-600 shadow-lg transition-all duration-200">🚀 Send</button>
+        <button id="receiveBtn" class="px-6 py-3 bg-accent rounded-xl text-lg font-semibold hover:bg-teal-600 shadow-lg transition-all duration-200">📥 Receive</button>
+      </div>
+
+      <div id="fileArea" class="space-y-6 hidden">
+        <div id="sendFields" class="hidden">
+          <div class="flex gap-4 justify-center mb-2">
+            <label class="flex items-center gap-2">
+              <input type="radio" name="uploadType" value="file" checked> File
+            </label>
+            <label class="flex items-center gap-2">
+              <input type="radio" name="uploadType" value="folder"> Folder
+            </label>
+          </div>
+
+          <input type="file" id="fileInput" class="hidden" multiple />
+          <div id="dragDropArea" class="transparent-upload-box rounded-lg p-10 cursor-pointer flex items-center justify-center flex-col space-y-2">
+            <span class="text-lg font-semibold">Click or Drag & Drop</span>
+            <span class="text-gray-400 text-sm">Files or Folders here to upload.</span>
+          </div>
+          <div id="previewArea" class="mt-4 w-full flex flex-col items-center max-h-40 overflow-y-auto p-2 bg-black/10 rounded-lg border border-gray-700 hidden"></div>
+          <button id="uploadBtn" class="px-6 py-3 bg-primary rounded-xl text-lg font-semibold hover:bg-indigo-600 shadow-lg mt-4 hidden transition-all duration-200">⬆️ Start Upload</button>
+          <button id="clearBtn" class="px-4 py-2 bg-gray-600 text-white rounded-xl text-sm mt-4 hidden transition-all duration-200">❌ Clear</button>
+        </div>
+
+        <div class="flex flex-col items-center justify-center w-full" id="codeArea" style="display:none;">
+          <label for="codeInput" class="mb-2 text-base font-semibold text-primary">Enter 4-digit Code</label>
+          <input id="codeInput" type="text" maxlength="4" pattern="\d{4}" placeholder="4-digit code" class="w-32 px-6 py-3 rounded-xl bg-white text-black text-center font-mono font-bold tracking-widest shadow-lg border-2 border-primary focus:ring-2 focus:ring-primary text-lg mb-4" />
+          <button id="downloadBtn" class="px-6 py-3 bg-accent rounded-xl text-lg font-semibold hover:bg-teal-600 shadow-lg mt-2 transition-all duration-200">⬇️ Show Files</button>
+        </div>
+
+        <div id="fileLinks" class="space-y-2 mt-4 text-left max-h-40 overflow-y-auto p-2 bg-black/10 rounded-lg border border-gray-700 hidden"></div>
+      </div>
+
+      <progress id="progressBar" value="0" max="100" class="w-full h-2 bg-gray-700 rounded-lg overflow-hidden hidden"></progress>
+      <div id="statusMessage" class="text-xs sm:text-sm text-gray-400"></div>
+    </div>
+
+    <script>
+      const sendBtn = document.getElementById('sendBtn');
+      const receiveBtn = document.getElementById('receiveBtn');
+      const fileInput = document.getElementById('fileInput');
+      const dragDropArea = document.getElementById('dragDropArea');
+      const uploadBtn = document.getElementById('uploadBtn');
+      const progressBar = document.getElementById('progressBar');
+      const statusMessage = document.getElementById('statusMessage');
+      const fileArea = document.getElementById('fileArea');
+      const sendFields = document.getElementById('sendFields');
+      const codeInput = document.getElementById('codeInput');
+      const codeArea = document.getElementById('codeArea');
+      const fileLinksContainer = document.getElementById('fileLinks');
+      const uploadTypeRadios = document.getElementsByName('uploadType');
+      const previewArea = document.getElementById('previewArea');
+      const clearBtn = document.getElementById('clearBtn');
+      const downloadBtn = document.getElementById('downloadBtn');
+
+      let currentMode = '';
+      let filesToUpload = [];
+      let startTime;
+      let lastLoaded = 0;
+      let lastTime = 0;
+
+      // Debounce function for efficient event handling
+      function debounce(func, wait) {
+        let timeout;
+        return function executedFunction(...args) {
+          const later = () => {
+            clearTimeout(timeout);
+            func(...args);
+          };
+          clearTimeout(timeout);
+          timeout = setTimeout(later, wait);
+        };
+      }
+
+      function formatBytes(bytes, decimals = 2) {
+        if (bytes === 0) return '0 Bytes';
+        const k = 1024;
+        const dm = decimals < 0 ? 0 : decimals;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+      }
+
+      function formatTime(seconds) {
+        if (seconds < 60) return `${Math.ceil(seconds)}s`;
+        const minutes = Math.floor(seconds / 60);
+        const remainingSeconds = Math.ceil(seconds % 60);
+        return `${minutes}m ${remainingSeconds}s`;
+      }
+      
+      function scheduleCleanup(code) {
+        const cleanupTime = 10 * 60 * 1000; // 10 minutes in milliseconds
+        setTimeout(async () => {
+          try {
+            const response = await fetch(`/cleanup?code=${encodeURIComponent(code)}`);
+            const data = await response.json();
+            if (data.success) {
+              console.log(`Cleanup successful for code: ${code}`);
+            } else {
+              console.error(`Cleanup failed for code: ${code}. Reason: ${data.error}`);
+            }
+          } catch (error) {
+            console.error(`Network error during cleanup for code: ${code}`, error);
+          }
+        }, cleanupTime);
+      }
+
+      function clearUI() {
+        sendFields.classList.add('hidden');
+        codeArea.style.display = 'none';
+        fileArea.classList.add('hidden');
+        progressBar.classList.add('hidden');
+        statusMessage.textContent = '';
+        codeInput.value = '';
+        previewArea.innerHTML = '';
+        previewArea.classList.add('hidden');
+        fileLinksContainer.innerHTML = '';
+        fileLinksContainer.classList.add('hidden');
+        codeInput.classList.remove('border-red-500');
+        fileInput.value = '';
+        codeInput.readOnly = false;
+        filesToUpload = [];
+        uploadBtn.classList.add('hidden');
+        clearBtn.classList.add('hidden');
+        lastLoaded = 0;
+        lastTime = 0;
+      }
+
+      function showFilePreview(files) {
+        // Use DocumentFragment for batch DOM updates
+        const fragment = document.createDocumentFragment();
+        
+        if (files.length === 0) {
+          previewArea.classList.add('hidden');
+          return;
+        }
+        
+        previewArea.classList.remove('hidden');
+        uploadBtn.classList.remove('hidden');
+        clearBtn.classList.remove('hidden');
+
+        files.forEach(file => {
+          const fileCard = document.createElement('div');
+          fileCard.className = 'file-preview-card flex items-center justify-between p-2 mb-1 bg-gray-800/60 rounded-md shadow-sm text-white border border-gray-700';
+          let icon = '📁';
+          if (file.type.startsWith('image/')) icon = '🖼️';
+          else if (file.type.startsWith('video/')) icon = '📹';
+          else if (file.type === 'application/pdf') icon = '📄';
+          else if (file.type.startsWith('text/')) icon = '📃';
+          else if (file.name.endsWith('.zip') || file.name.endsWith('.rar') || file.name.endsWith('.7z')) icon = '📦';
+          else if (file.name.endsWith('.doc') || file.name.endsWith('.docx')) icon = '📝';
+          else if (file.name.endsWith('.xls') || file.name.endsWith('.xlsx')) icon = '📊';
+          else if (file.name.endsWith('.ppt') || file.name.endsWith('.pptx')) icon = '🖥️';
+          else if (file.webkitRelativePath) icon = '📂';
+
+          const fileNameSpan = document.createElement('span');
+          fileNameSpan.className = 'flex-1 text-sm truncate mr-2';
+          const displayFileName = file.webkitRelativePath || file.name;
+          fileNameSpan.innerHTML = `<span class="mr-2 text-base">${icon}</span>${displayFileName}`;
+
+          const fileSizeSpan = document.createElement('span');
+          fileSizeSpan.className = 'text-xs text-gray-400 flex-shrink-0';
+          fileSizeSpan.textContent = `(${formatBytes(file.size)})`;
+
+          fileCard.appendChild(fileNameSpan);
+          fileCard.appendChild(fileSizeSpan);
+          fragment.appendChild(fileCard);
+        });
+
+        previewArea.innerHTML = ''; // Clear once
+        previewArea.appendChild(fragment); // Add all at once
+      }
+
+      function handleFiles(files) {
+        const mode = Array.from(uploadTypeRadios).find(r => r.checked).value;
+        
+        // Use Array.slice for better performance with large file lists
+        filesToUpload = Array.prototype.slice.call(files);
+        
+        if (mode === 'file') {
+          // Batch operation for better performance
+          filesToUpload.forEach(f => delete f.webkitRelativePath);
+        }
+        
+        showFilePreview(filesToUpload);
+        const totalSize = filesToUpload.reduce((acc, file) => acc + file.size, 0);
+        statusMessage.textContent = `Selected ${filesToUpload.length} ${mode === 'file' ? 'file(s)' : 'item(s)'} totaling ${formatBytes(totalSize)}. Ready to upload.`;
+      }
+
+      // Event Listeners
+      sendBtn.addEventListener('click', () => {
+        currentMode = 'send';
+        clearUI();
+        fileArea.classList.remove('hidden');
+        sendFields.classList.remove('hidden');
+        statusMessage.textContent = 'Drag and drop files or folders here.';
+      });
+
+      receiveBtn.addEventListener('click', () => {
+        currentMode = 'receive';
+        clearUI();
+        fileArea.classList.remove('hidden');
+        codeArea.style.display = 'flex';
+        codeArea.classList.add('justify-center');
+        statusMessage.textContent = 'Enter the 4-digit code to receive files.';
+        codeInput.focus();
+      });
+
+      uploadTypeRadios.forEach(radio => {
+        radio.addEventListener('change', () => {
+          if (radio.checked && radio.value === 'folder') fileInput.setAttribute('webkitdirectory', '');
+          else fileInput.removeAttribute('webkitdirectory');
+          fileInput.value = '';
+          filesToUpload = [];
+          showFilePreview(filesToUpload);
+          statusMessage.textContent = `Drag and drop files or folders here.`;
+        });
+      });
+
+      dragDropArea.addEventListener('click', () => fileInput.click());
+      fileInput.addEventListener('change', e => handleFiles(e.target.files));
+
+      dragDropArea.addEventListener('dragover', e => { 
+        e.preventDefault(); 
+        e.stopPropagation(); 
+        dragDropArea.classList.add('drag-over'); 
+      });
+      
+      dragDropArea.addEventListener('dragleave', e => { 
+        e.preventDefault(); 
+        e.stopPropagation(); 
+        dragDropArea.classList.remove('drag-over'); 
+      });
+      
+      dragDropArea.addEventListener('drop', e => {
+        e.preventDefault(); 
+        e.stopPropagation(); 
+        dragDropArea.classList.remove('drag-over');
+        handleFiles(e.dataTransfer.files);
+      });
+
+      clearBtn.addEventListener('click', clearUI);
+
+      // Upload button
+      uploadBtn.addEventListener('click', async () => {
+        if (currentMode !== 'send' || filesToUpload.length === 0) {
+          statusMessage.textContent = 'Please select files or a folder to upload.';
+          return;
+        }
+
+        progressBar.classList.remove('hidden');
+        progressBar.value = 0;
+        statusMessage.textContent = `Preparing upload of ${filesToUpload.length} item(s)...`;
+        previewArea.innerHTML = '';
+        previewArea.classList.add('hidden');
+        uploadBtn.classList.add('hidden');
+        clearBtn.classList.add('hidden');
+
+        const formData = new FormData();
+        filesToUpload.forEach(file => {
+          formData.append('file', file);
+          if (file.webkitRelativePath) formData.append('relative_paths', file.webkitRelativePath);
+        });
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/upload', true);
+
+        startTime = Date.now();
+        const totalSize = filesToUpload.reduce((acc, file) => acc + file.size, 0);
+        lastLoaded = 0;
+        lastTime = startTime;
+
+        xhr.upload.onprogress = e => {
+          if (e.lengthComputable) {
+            const percent = (e.loaded / e.total) * 100;
+            progressBar.value = percent;
+
+            // Throttle UI updates for better performance
+            const currentTime = Date.now();
+            if (currentTime - lastTime < 100) return; // Update max every 100ms
+            
+            const timeElapsed = (currentTime - lastTime) / 1000;
+            const bytesLoaded = e.loaded - lastLoaded;
+            
+            const speed = bytesLoaded / timeElapsed; // bytes/second
+            const remainingBytes = e.total - e.loaded;
+            const etaSeconds = speed > 0 ? remainingBytes / speed : Infinity;
+
+            lastLoaded = e.loaded;
+            lastTime = currentTime;
+
+            const speedString = formatBytes(speed, 2) + '/s';
+            const etaString = isFinite(etaSeconds) ? formatTime(etaSeconds) : 'calculating...';
+
+            statusMessage.innerHTML = `Uploading: ${percent.toFixed(0)}% | Speed: ${speedString} | ETA: ${etaString}`;
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status === 200) {
+            const data = JSON.parse(xhr.responseText);
+            if (data.success) {
+              progressBar.value = 100;
+              sendFields.classList.add('hidden');
+              codeArea.style.display = 'none';
+
+              const codeDisplay = document.createElement('input');
+              codeDisplay.type = 'text';
+              codeDisplay.value = data.code;
+              codeDisplay.readOnly = true;
+              codeDisplay.className = 'w-32 px-6 py-3 rounded-xl bg-white text-black text-center font-mono font-bold tracking-widest shadow-lg border-2 border-primary focus:ring-2 focus:ring-primary text-lg mb-4';
+
+              codeDisplay.onclick = function() {
+                this.select();
+                navigator.clipboard.writeText(this.value);
+                statusMessage.textContent = '📋 Code copied to clipboard!';
+                setTimeout(() => { statusMessage.textContent = '✅ Upload complete! Share this code to allow others to download.'; }, 1000);
+              };
+
+              statusMessage.innerHTML = `<p>✅ Upload complete! Total time: ${formatTime((Date.now() - startTime) / 1000)}</p><br> <p>Your code (click to copy):</p>`;
+              statusMessage.appendChild(codeDisplay);
+
+              // Schedule the cleanup after 5 minutes
+              scheduleCleanup(data.code);
+            } else {
+              statusMessage.textContent = `❌ Upload failed: ${data.error || 'Unknown error.'}`;
+              progressBar.classList.add('hidden');
+              codeInput.value = '';
+              codeArea.style.display = 'none';
+            }
+          } else {
+            statusMessage.textContent = `❌ Upload failed. Server error: ${xhr.status} ${xhr.statusText}`;
+            progressBar.classList.add('hidden');
+            codeInput.value = '';
+            codeArea.style.display = 'none';
+          }
+        };
+        
+        xhr.onerror = () => { 
+          statusMessage.textContent = '❌ Network error during upload. Please try again.'; 
+          progressBar.classList.add('hidden'); 
+          codeInput.value = ''; 
+          codeArea.style.display = 'none'; 
+        };
+        
+        xhr.send(formData);
+      });
+
+      downloadBtn.addEventListener('click', tryDownload);
+      
+      codeInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter') tryDownload();
+      });
+
+      // Debounced code validation
+      codeInput.addEventListener('input', debounce(() => {
+        const code = codeInput.value.trim();
+        if (code.length === 4 && /^\d{4}$/.test(code)) {
+          codeInput.classList.remove('border-red-500');
+        }
+      }, 500));
+
+      async function tryDownload() {
+        if (currentMode !== 'receive') return;
+        const code = codeInput.value.trim();
+        if (!/^\d{4}$/.test(code)) {
+          statusMessage.textContent = 'Please enter a valid 4-digit code.';
+          codeInput.classList.add('border-red-500');
+          return;
+        }
+        
+        codeInput.classList.remove('border-red-500');
+        fileLinksContainer.innerHTML = '';
+        fileLinksContainer.classList.add('hidden');
+        statusMessage.textContent = 'Searching for files...';
+        progressBar.classList.remove('hidden');
+        progressBar.value = 0;
+
+        try {
+          const response = await fetch(`/list_files?code=${encodeURIComponent(code)}`);
+          const data = await response.json();
+
+          if (data.success && data.files.length > 0) {
+            progressBar.value = 100;
+            statusMessage.textContent = `Found ${data.files.length} file(s). Click "Download All" or individual links below.`;
+            fileLinksContainer.classList.remove('hidden');
+            clearBtn.classList.remove('hidden');
+
+            const downloadAllBtn = document.createElement('button');
+            downloadAllBtn.textContent = '⬇️ Download All';
+            downloadAllBtn.className = 'px-4 py-2 bg-primary rounded-xl text-white font-semibold shadow hover:bg-indigo-600 transition-all mr-2 flex items-center justify-center gap-2 w-full sm:w-auto';
+            downloadAllBtn.setAttribute('data-files', JSON.stringify(data.files));
+            downloadAllBtn.setAttribute('data-code', code);
+
+            downloadAllBtn.addEventListener('click', async () => {
+              const filesToDownload = JSON.parse(downloadAllBtn.getAttribute('data-files'));
+              const codeToUse = downloadAllBtn.getAttribute('data-code');
+              
+              // Use Promise-based sequential download to avoid browser limits
+              for (let i = 0; i < filesToDownload.length; i++) {
+                const filename = filesToDownload[i];
+                await new Promise(resolve => {
+                  setTimeout(() => {
+                    // Create download link with proper encoding
+                    const downloadUrl = `/download/${encodeURIComponent(codeToUse)}/${encodeURIComponent(filename)}?download_count=${i+1}`;
+                    const link = document.createElement('a');
+                    link.href = downloadUrl;
+                    link.download = filename.split('/').pop();
+                    link.style.display = 'none';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    resolve();
+                  }, i * 500);
+                });
+              }
+              
+              statusMessage.textContent = 'All downloads started! Check your downloads folder.';
+            });
+
+            fileLinksContainer.appendChild(downloadAllBtn);
+
+            data.files.forEach((filename, index) => {
+              const link = document.createElement('a');
+              const downloadUrl = `/download/${encodeURIComponent(code)}/${encodeURIComponent(filename)}?download_count=${index+1}`;
+              link.href = downloadUrl;
+              link.className = 'block px-4 py-2 bg-accent rounded-xl text-white font-semibold shadow hover:bg-teal-600 transition-all mt-2 flex items-center justify-center gap-2 w-full sm:w-auto';
+              link.textContent = `⬇️ ${filename.split('/').pop()}`;
+              link.download = filename.split('/').pop();
+              
+              // Add click handler to track individual downloads
+              link.addEventListener('click', (e) => {
+                e.preventDefault();
+                const downloadLink = document.createElement('a');
+                downloadLink.href = link.href;
+                downloadLink.download = link.download;
+                downloadLink.style.display = 'none';
+                document.body.appendChild(downloadLink);
+                downloadLink.click();
+                document.body.removeChild(downloadLink);
+                statusMessage.textContent = `Downloading: ${filename.split('/').pop()}`;
+              });
+              
+              fileLinksContainer.appendChild(link);
+            });
+          } else {
+            statusMessage.textContent = data.error || 'No files available for this code, or code expired.';
+            progressBar.classList.add('hidden');
+            fileLinksContainer.classList.add('hidden');
+            clearBtn.classList.remove('hidden');
+          }
+        } catch (error) {
+          console.error('Download fetch error:', error);
+          statusMessage.textContent = '❌ Error fetching file list. Please check the code or network.';
+          progressBar.classList.add('hidden');
+          fileLinksContainer.classList.add('hidden');
+          clearBtn.classList.remove('hidden');
+        }
+      }
+    </script>
+  </body>
+</html>
