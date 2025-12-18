@@ -17,11 +17,14 @@ active_codes = {}
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 def generate_code():
-    """Generates a unique 4-digit numeric code."""
-    while True:
+    """Generates a unique 4-digit numeric code more efficiently."""
+    existing_codes = set(active_codes.keys())
+    for _ in range(100):  # Limit attempts
         code = ''.join(random.choices(string.digits, k=4))
-        if code not in active_codes:
+        if code not in existing_codes:
             return code
+    # Fallback: use timestamp-based code if too many collisions
+    return str(int(time.time()))[-4:].zfill(4)
 
 def estimate_upload_time(total_bytes):
     """Returns estimated upload time in seconds based on simulated speed."""
@@ -47,12 +50,21 @@ def upload():
     uploaded_files_data = []
     total_size = 0
 
+    # COMBINED PASS: Calculate size and save files simultaneously
     for i, f in enumerate(files):
         if f.filename:
-            file_bytes = f.read()
-            total_size += len(file_bytes)
-            f.stream.seek(0)  # Reset stream after reading
+            # Get file size from content length if available (more efficient)
+            file_size = f.content_length
+            if file_size is None:
+                # Fallback to seeking method only if needed
+                current_pos = f.tell()
+                f.seek(0, 2)
+                file_size = f.tell()
+                f.seek(current_pos)
+            
+            total_size += file_size
 
+            # Save file immediately after size calculation
             if relative_paths and i < len(relative_paths):
                 full_path = os.path.join(upload_dir, relative_paths[i])
                 os.makedirs(os.path.dirname(full_path), exist_ok=True)
@@ -67,7 +79,10 @@ def upload():
     if not uploaded_files_data:
         return jsonify({'success': False, 'error': 'No files uploaded.'}), 400
 
-    active_codes[code] = uploaded_files_data
+    active_codes[code] = {
+        'files': uploaded_files_data,
+        'upload_dir': upload_dir
+    }
     eta = estimate_upload_time(total_size)
 
     return jsonify({
@@ -81,30 +96,78 @@ def upload():
 @app.route('/list_files')
 def list_files():
     code = request.args.get('code')
-    files = active_codes.get(code)
-
-    if not files:
+    code_data = active_codes.get(code)
+    
+    if not code_data:
         return jsonify({'success': False, 'error': 'Invalid or expired code.'}), 404
 
+    files = code_data['files']
     return jsonify({'success': True, 'files': files, 'message': 'Files listed successfully.'})
 
+@app.route('/download/<code_id>')
 @app.route('/download/<code_id>/<path:filename>')
-def download_file(code_id, filename):
-    folder_path = os.path.join(app.config['UPLOAD_FOLDER'], code_id)
+def download_file(code_id, filename=None):
+    code_data = active_codes.get(code_id)
+    
+    if not code_data:
+        return jsonify({'success': False, 'error': 'Invalid or expired code.'}), 404
+    
+    folder_path = code_data['upload_dir']
+    
+    if filename is None:
+        # Return list of files if no filename provided
+        files = code_data['files']
+        return jsonify({'success': True, 'files': files})
+    
+    # Ensure the file exists
+    file_path = os.path.join(folder_path, filename)
+    if not os.path.exists(file_path):
+        return jsonify({'success': False, 'error': 'File not found.'}), 404
 
     @after_this_request
     def cleanup(response):
         try:
+            # Check if this was the last file to download
             download_count = request.args.get('download_count', 0, type=int)
-            total_files = len(active_codes.get(code_id, []))
+            total_files = len(code_data['files'])
             if download_count >= total_files:
-                shutil.rmtree(folder_path)
+                if os.path.exists(folder_path):
+                    shutil.rmtree(folder_path)
                 active_codes.pop(code_id, None)
+                print(f"Cleaned up files for code: {code_id}")
         except Exception as e:
             print(f"Cleanup error: {e}")
         return response
 
-    return send_from_directory(folder_path, secure_filename(filename), as_attachment=True)
+    try:
+        return send_from_directory(
+            folder_path, 
+            filename, 
+            as_attachment=True,
+            download_name=os.path.basename(filename)  # Set proper download name
+        )
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Download failed: {str(e)}'}), 500
+
+@app.route('/cleanup')
+def cleanup():
+    code = request.args.get('code')
+    if not code:
+        return jsonify({'success': False, 'error': 'No code provided.'}), 400
+    
+    code_data = active_codes.get(code)
+    if not code_data:
+        return jsonify({'success': False, 'error': 'Invalid code.'}), 404
+    
+    folder_path = code_data['upload_dir']
+    
+    try:
+        if os.path.exists(folder_path):
+            shutil.rmtree(folder_path)
+        active_codes.pop(code, None)
+        return jsonify({'success': True, 'message': 'Cleanup successful.'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=8000)
